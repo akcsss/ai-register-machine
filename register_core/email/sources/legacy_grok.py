@@ -78,11 +78,37 @@ class LegacyGrokEmailSource:
             raise MailMissError(f"legacy OTP already used: {code}")
         return OtpCode(code=str(code), source=self.name)
 
-    def release(self, mailbox: Mailbox, *, success: bool) -> None:
+    def release(
+        self, mailbox: Mailbox, *, success: bool, consumed: bool = False
+    ) -> None:
+        """Retire or return the mailbox to the pool.
+
+        success=True  -> mark_used: the address now owns an account.
+        consumed=True -> mark_error: the email was submitted to the site (OTP
+                         requested / account may exist) but no secret captured;
+                         retrying an onboarded address loops on read_key, so
+                         retire it and let the serial batch advance.
+        otherwise     -> release_email_attempt: pre-submit flake (invite /
+                         Turnstile / browser launch); keep it pickable.
+        """
         try:
             reg = self._reg()
-            # best-effort; ttk has hotmail/gmail release helpers
-            if hasattr(reg, "_hotmail_release_alias"):
+            if success and hasattr(reg, "mark_used"):
+                try:
+                    reg.mark_used(mailbox.address, "")  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+            elif consumed and hasattr(reg, "mark_error"):
+                try:
+                    reg.mark_error(mailbox.address, "", "consumed_no_secret")  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+            elif hasattr(reg, "release_email_attempt"):
+                try:
+                    reg.release_email_attempt(mailbox.address)  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+            elif hasattr(reg, "_hotmail_release_alias"):
                 try:
                     reg._hotmail_release_alias(mailbox.address)  # type: ignore[attr-defined]
                 except Exception:

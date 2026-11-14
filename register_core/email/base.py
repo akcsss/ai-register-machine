@@ -36,6 +36,19 @@ class EmailSource(Protocol):
         """Block until a fresh OTP arrives or raise MailMissError."""
         ...
 
-    def release(self, mailbox: Mailbox, *, success: bool) -> None:
-        """Optional cleanup / return alias to pool. Default no-op OK."""
+    def release(
+        self, mailbox: Mailbox, *, success: bool, consumed: bool = False
+    ) -> None:
+        """Optional cleanup / retire the mailbox.
+
+        ``success``  -> the attempt produced an account; retire the address.
+        ``consumed`` -> the address was already submitted to the site (its OTP
+                        was requested, so an account may exist) but no secret
+                        was captured. Retrying it would loop, so retire it too;
+                        this is what lets a serial batch advance past an
+                        already-registered pool entry.
+        neither      -> pre-submit flake (invite/Turnstile/browser): return the
+                        address to the pool so it stays pickable.
+        Default no-op OK.
+        """
         ...

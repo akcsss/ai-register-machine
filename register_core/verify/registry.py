@@ -26,4 +26,8 @@ def get_verifier(name: str, **kwargs: Any) -> Verifier:
         from register_core.verify.typesafe_key import TypesafeKeyVerifier
 
         return TypesafeKeyVerifier(**kwargs)
+    if key in ("nace", "nace-ai", "nace.ai", "drex", "nace_key"):
+        from register_core.verify.nace_key import NaceKeyVerifier
+
+        return NaceKeyVerifier(**kwargs)
     raise KeyError(f"unknown verifier: {name!r}")

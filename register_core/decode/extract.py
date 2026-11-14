@@ -41,6 +41,14 @@ _OPENAI_OTP_PATTERNS = (
     re.compile(r"confirm(?:ation)?\s+code[:\s]+(\d{4,8})", re.I),
     re.compile(r"otp[^\d]{0,20}(\d{4,8})", re.I),
 )
+# console.nace.ai (Nace.AI / Drex) sends "Your Drex sign-in code is NNNNNN".
+# The generic patterns miss it because "Drex sign-in" sits between "your" and
+# "code" and the separator is "is", not ":". Checked before the generic list so
+# the subject line ("Your Drex sign-in code") plus body both resolve.
+_NACE_OTP_PATTERNS = (
+    re.compile(r"sign[\s\-]?in\s+code\s*(?:is|:)?\s*(\d{4,8})", re.I),
+    re.compile(r"\bDrex\b[^\d]{0,40}(\d{6})", re.I),
+)
 
 
 def extract_otp_code(blob: str, subject: str = "") -> str:
@@ -65,6 +73,10 @@ def extract_otp_code(blob: str, subject: str = "") -> str:
     m = XAI_BODY_CODE_RE.search(raw)
     if m:
         return m.group(1)
+    for pat in _NACE_OTP_PATTERNS:
+        m = pat.search(raw)
+        if m:
+            return m.group(1)
     for pat in _OPENAI_OTP_PATTERNS:
         m = pat.search(raw)
         if m:

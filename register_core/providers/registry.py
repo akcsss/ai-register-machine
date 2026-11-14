@@ -35,6 +35,9 @@ def get_provider(name: str, **kwargs: Any) -> RegisterProvider:
         "jev": "typesafe",
         "typesafe-ai": "typesafe",
         "typesafe.ai": "typesafe",
+        "nace-ai": "nace",
+        "nace.ai": "nace",
+        "drex": "nace",
     }
     key = aliases.get(key, key)
     if key not in _FACTORY:
@@ -49,6 +52,7 @@ def _ensure_builtins() -> None:
     from register_core.providers.chatgpt_adapter import ChatGPTProvider
     from register_core.providers.grok_adapter import GrokProvider
     from register_core.providers.mimo_adapter import MimoProvider
+    from register_core.providers.nace_adapter import NaceProvider
     from register_core.providers.outlook_adapter import OutlookProvider
     from register_core.providers.typesafe_adapter import TypesafeProvider
 
@@ -58,6 +62,7 @@ def _ensure_builtins() -> None:
         "chatgpt": lambda **kw: ChatGPTProvider(**kw),
         "outlook": lambda **kw: OutlookProvider(**kw),
         "typesafe": lambda **kw: TypesafeProvider(**kw),
+        "nace": lambda **kw: NaceProvider(**kw),
     }
     _FACTORY = {**built, **_FACTORY}
     _BUILTINS_READY = True

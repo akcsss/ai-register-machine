@@ -97,8 +97,10 @@ class CompositeEmailSource:
         )
         return otp
 
-    def release(self, mailbox: Mailbox, *, success: bool) -> None:
-        self.mailbox.release(mailbox, success=success)
+    def release(
+        self, mailbox: Mailbox, *, success: bool, consumed: bool = False
+    ) -> None:
+        self.mailbox.release(mailbox, success=success, consumed=consumed)
 
     def __repr__(self) -> str:
         return f"CompositeEmailSource(name={self.name!r})"

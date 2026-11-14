@@ -2616,56 +2616,71 @@ def _hotmail_imap_get_code(mailbox_email, target_email, access_token, log_callba
     imap = imaplib.IMAP4_SSL(host, 993, timeout=45)
     auth_string = f"user={mailbox_email}\x01auth=Bearer {access_token}\x01\x01"
     imap.authenticate("XOAUTH2", lambda _: auth_string.encode())
+    # nace.ai/Drex (and many senders) land in Junk, not INBOX; scan both by
+    # default. Override with hotmail_imap_folders="INBOX,Junk,其他".
     try:
-        imap.select("INBOX")
-        status, data = imap.search(None, "ALL")
-        if status != "OK" or not data or not data[0]:
-            return None
-        msg_ids = data[0].split()[-max(1, last_n):]
-        for mid in reversed(msg_ids):
-            _, msg_data = imap.fetch(mid, "(RFC822)")
-            if not msg_data or not msg_data[0] or not isinstance(msg_data[0][1], bytes):
-                continue
-            msg = email_lib.message_from_bytes(msg_data[0][1])
-
-            date_str = msg.get("Date")
-            if date_str:
-                try:
-                    dt = parsedate_to_datetime(date_str)
-                    if dt.tzinfo is None:
-                        dt = dt.replace(tzinfo=timezone.utc)
-                    if int(dt.timestamp() * 1000) < filter_after_ts:
-                        continue
-                except Exception:
-                    pass
-
-            subject = _hotmail_decode_header(msg.get("Subject", ""))
-            sender = _hotmail_decode_header(msg.get("From", ""))
-            recipient_blob = " ".join(
-                _hotmail_decode_header(msg.get(h, ""))
-                for h in (
-                    "To",
-                    "Cc",
-                    "Delivered-To",
-                    "X-Original-To",
-                    "Original-Recipient",
-                    "Envelope-To",
-                )
-            ).lower()
-            recipient_matched = not target_lower or target_lower in recipient_blob
-            if require_recipient and not recipient_matched:
-                continue
-
-            body = _hotmail_message_body(msg)
-            combined = f"{subject}\n{sender}\n{recipient_blob}\n{body}"
-            combined_lower = combined.lower()
-            if not any(kw in combined_lower for kw in keywords):
-                continue
-            code = extract_otp_code(combined, subject)
-            if code:
+        folders_cfg = str(config.get("hotmail_imap_folders", "INBOX,Junk") or "INBOX,Junk")
+    except Exception:
+        folders_cfg = "INBOX,Junk"
+    folders = [f.strip() for f in folders_cfg.split(",") if f.strip()] or ["INBOX"]
+    try:
+        for folder in folders:
+            try:
+                status, _ = imap.select(folder)
+            except Exception as exc:
                 if log_callback:
-                    log_callback(f"[*] Hotmail/Outlook 从邮件中提取到验证码: {code}")
-                return code
+                    log_callback(f"[Debug] Hotmail/Outlook IMAP 选择文件夹失败: {folder}: {exc}")
+                continue
+            if status != "OK":
+                continue
+            status, data = imap.search(None, "ALL")
+            if status != "OK" or not data or not data[0]:
+                continue
+            msg_ids = data[0].split()[-max(1, last_n):]
+            for mid in reversed(msg_ids):
+                _, msg_data = imap.fetch(mid, "(RFC822)")
+                if not msg_data or not msg_data[0] or not isinstance(msg_data[0][1], bytes):
+                    continue
+                msg = email_lib.message_from_bytes(msg_data[0][1])
+
+                date_str = msg.get("Date")
+                if date_str:
+                    try:
+                        dt = parsedate_to_datetime(date_str)
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=timezone.utc)
+                        if int(dt.timestamp() * 1000) < filter_after_ts:
+                            continue
+                    except Exception:
+                        pass
+
+                subject = _hotmail_decode_header(msg.get("Subject", ""))
+                sender = _hotmail_decode_header(msg.get("From", ""))
+                recipient_blob = " ".join(
+                    _hotmail_decode_header(msg.get(h, ""))
+                    for h in (
+                        "To",
+                        "Cc",
+                        "Delivered-To",
+                        "X-Original-To",
+                        "Original-Recipient",
+                        "Envelope-To",
+                    )
+                ).lower()
+                recipient_matched = not target_lower or target_lower in recipient_blob
+                if require_recipient and not recipient_matched:
+                    continue
+
+                body = _hotmail_message_body(msg)
+                combined = f"{subject}\n{sender}\n{recipient_blob}\n{body}"
+                combined_lower = combined.lower()
+                if not any(kw in combined_lower for kw in keywords):
+                    continue
+                code = extract_otp_code(combined, subject)
+                if code:
+                    if log_callback:
+                        log_callback(f"[*] Hotmail/Outlook 从邮件中提取到验证码: {code} ({folder})")
+                    return code
         return None
     finally:
         try:

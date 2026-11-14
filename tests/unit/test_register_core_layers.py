@@ -270,7 +270,12 @@ class TestPipeline(unittest.TestCase):
             stats = pipe.run(1, extra=dict(self._OFFLINE_EXTRA))
             self.assertEqual(stats.ok, 1)
             mode = stat.S_IMODE(path.stat().st_mode)
-            self.assertEqual(mode, 0o600)
+            if os.name == "posix":
+                # POSIX: the sink must create the secret file 0600.
+                self.assertEqual(mode, 0o600)
+            else:
+                # Windows has no POSIX mode bits; ACLs govern access there.
+                self.assertNotEqual(mode, 0)
             data = json.loads(path.read_text(encoding="utf-8").strip())
             self.assertEqual(data["secret"], "sk-secretvalue1234567890")
 
@@ -785,6 +790,26 @@ a {{ color:#888888; }}
 
         blob = "Enter this temporary verification code to continue: 042902"
         self.assertEqual(extract_otp_code(blob, subject="Your OpenAI verification code"), "042902")
+
+    def test_nace_drex_signin_code(self):
+        from register_core.email.sources.tinyhost import extract_otp_code
+
+        # console.nace.ai (Drex) body: "Your Drex sign-in code is NNNNNN".
+        blob = (
+            "Your Drex sign-in code is 369568. It expires in one hour.\n"
+            "Nace.AI\nYour sign-in code\n"
+            "Enter this code in Drex to finish signing in.\n369568"
+        )
+        self.assertEqual(extract_otp_code(blob, subject="Your Drex sign-in code"), "369568")
+
+    def test_nace_pattern_does_not_hijack_openai(self):
+        from register_core.email.sources.tinyhost import extract_otp_code
+
+        # The nace/Drex patterns must not shadow the OpenAI contextual decode.
+        self.assertEqual(
+            extract_otp_code("Your temporary verification code is 112233", subject="OpenAI"),
+            "112233",
+        )
 
     def test_openai_no_css_hex_false_positive(self):
         from register_core.email.sources.tinyhost import extract_otp_code

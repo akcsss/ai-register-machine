@@ -30,8 +30,11 @@ class JsonlSink:
             fd = os.open(str(path), flags, 0o600)
             try:
                 try:
+                    # fchmod is POSIX-only; on Windows os.open's mode argument
+                    # does not map to ACLs, so the file inherits directory ACLs.
+                    # Guard AttributeError too — it is not an OSError there.
                     os.fchmod(fd, 0o600)
-                except OSError:
+                except (OSError, AttributeError):
                     pass
                 with os.fdopen(fd, "ab") as f:
                     f.write(data)

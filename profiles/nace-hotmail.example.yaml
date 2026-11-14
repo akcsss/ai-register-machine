@@ -1,0 +1,51 @@
+# Example: console.nace.ai + Hotmail paired mailbox/decode
+#   python -m register_core run --profile profiles/nace-hotmail.example.yaml -n 1
+#
+# A real inbox is required. Cloudflare Email Routing drops nace.ai OTP for the
+# project temp domains (mangoqwq.com etc.), so the mailbox must be Hotmail/
+# Outlook (or another real inbox). Signup is a browser flow: the provider drives
+# DrissionPage + the bundled MV3 Turnstile-patch extension, so it needs a
+# browser-capable host with a display (or Xvfb). Never run it on an OOM-hostile
+# box (pxed); use the register host.
+
+apiVersion: register.v1
+kind: RegisterProfile
+metadata:
+  name: nace-hotmail
+
+spec:
+  provider:
+    name: nace
+    options:
+      otp_timeout_s: 240
+
+  count: 1
+
+  mailbox:
+    type: hotmail
+
+  decode:
+    type: hotmail
+    options:
+      timeout_s: 240
+
+  strategy:
+    # n=1 stays serial + fail-fast. Browser flow is heavy; keep threads at 1.
+    fail_fast: true
+    fail_fast_kinds:
+      - registration_disallowed
+      - unsupported_email
+      - fatal
+      - verify
+    egress:
+      mode: direct
+    mail_proxy: direct
+
+  verify:
+    enabled: true
+
+  sink:
+    path: providers/nace/output/pipeline.jsonl
+
+  secrets:
+    mode: prod

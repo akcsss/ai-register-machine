@@ -9,6 +9,20 @@ project versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **console.nace.ai provider** (in-process browser): referral invite →
+  Cloudflare Turnstile (invisible/PRIME CONTROL) → Supabase email OTP →
+  `/dashboard` → reveal a fresh `nace_sk_…` **API key**. Hub
+  `./register.sh nace [count]`, aliases `nace-ai` / `nace.ai` / `drex`. Drives
+  DrissionPage with a bundled **MV3** Turnstile patch (the repo-root
+  `turnstilePatch/` is MV2 and crashes Chrome 149+). Default mailbox is
+  `hotmail` — a real inbox is required because Cloudflare Email Routing drops
+  nace.ai OTP for the project temp domains. Serial only (each attempt owns a
+  browser); requires a browser-capable host with a display/Xvfb. Success =
+  this-run `secret_kind=api_key` + new `0600` `nace-*.json`. No CPA inject.
+  Key is minted on `/dashboard/api-keys` via the **Create key** modal (revealed
+  once in a readonly `input[aria-label="New API key"]`). Full provider run
+  verified 2026-10-11: `ok=True`, `secret_kind=api_key`, live key
+  `POST https://console.nace.ai/v1/systemone` (model `drex-v1.5`) → HTTP 200.
 - **typesafe.ai / jev console provider** (in-process): Stytch magic-link →
   `/api/auth/callback` → `/api/api-keys`. Hub `./register.sh typesafe [count]`,
   aliases `jev` / `typesafe-ai`. Default mailbox is tinyhost (full body).

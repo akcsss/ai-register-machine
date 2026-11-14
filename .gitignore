@@ -56,6 +56,10 @@ accounts_cli.txt
 cpa_auths/*.json
 logs/
 
+# local scratch: pytest tmp roots (may hold credential backups) + ad-hoc scripts
+.tmp-pytest/
+.tmp_*.py
+
 # 第三方参照注册机（只读借鉴，勿提交）
 /grok-register/
 

@@ -23,8 +23,10 @@ class EmailSourceMailbox:
     def allocate(self) -> Mailbox:
         return self._source.allocate()
 
-    def release(self, mailbox: Mailbox, *, success: bool) -> None:
-        self._source.release(mailbox, success=success)
+    def release(
+        self, mailbox: Mailbox, *, success: bool, consumed: bool = False
+    ) -> None:
+        self._source.release(mailbox, success=success, consumed=consumed)
 
     @property
     def backend(self) -> EmailSource:

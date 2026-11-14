@@ -6,8 +6,9 @@
 #   ./register.sh mimo [count]
 #   ./register.sh chatgpt [count]
 #   ./register.sh typesafe [count] [threads]
+#   ./register.sh nace [count]
 #   ./register.sh core list|run ...
-#   ./register.sh smoke mimo|typesafe
+#   ./register.sh smoke mimo|typesafe|nace
 #   ./register.sh help
 #
 # Design:
@@ -16,6 +17,7 @@
 #   - MiMo is providers/mimo (Node/Playwright register-one.js)
 #   - ChatGPT is providers/chatgpt (in-process curl_cffi + EmailSource)
 #   - typesafe is providers/typesafe (in-process Stytch magic-link + EmailSource)
+#   - nace is providers/nace (in-process DrissionPage browser + Turnstile patch)
 #   - Shared ops: project nodes.json egress (no Clash required), Xvfb, fail-fast
 set -euo pipefail
 
@@ -30,6 +32,7 @@ register.sh — multi-provider hub (ai-register-machine)
   ./register.sh mimo [count]             Register Xiaomi MiMo API key (Node)
   ./register.sh chatgpt [count]          Register OpenAI platform account (protocol)
   ./register.sh typesafe [count] [threads] Register typesafe.ai / jev console API key (protocol)
+  ./register.sh nace [count]             Register console.nace.ai API key (browser + Turnstile)
   ./register.sh outlook [count] [threads] Register Microsoft Outlook account (register_core Pipeline; gated)
   ./register.sh core list                Layered framework: list providers/email
   ./register.sh core run -p mimo -n 1    Layered framework: pipeline run
@@ -37,6 +40,7 @@ register.sh — multi-provider hub (ai-register-machine)
   ./register.sh core run -p typesafe -n 1 --email-source tinyhost
   ./register.sh smoke mimo               MiMo tinyhost + xiaomi page smoke
   ./register.sh smoke typesafe           typesafe tinyhost + console probe (LIVE=1 for n=1)
+  ./register.sh smoke nace               nace reachability + static shape (LIVE=1 for n=1)
   ./register.sh help
 
 Layers (register_core):
@@ -52,6 +56,8 @@ Env (shared):
   CHATGPT_PROXY_LIST        explicit self-controlled pool
   CHATGPT_EMAIL_SOURCE      default cloudflare Worker (via runner)
   TYPESAFE_EMAIL_SOURCE     default tinyhost (magic-link needs full mail body)
+  NACE_EMAIL_SOURCE         default hotmail (nace OTP needs a real inbox)
+  NACE_INVITE_URL           referral invite (default adf5acm5)
   HEADLESS / HEADLESS_FLAG  browser mode
   OTP_RETRIES               MiMo temp-mail polls
 
@@ -304,6 +310,47 @@ case "$cmd" in
     fi
     exec bash "$ROOT/providers/typesafe/run-register.sh" "$COUNT"
     ;;
+  nace|nace-ai|nace.ai|drex)
+    COUNT="${1:-1}"
+    export COUNT
+    # In-process browser register (DrissionPage + bundled MV3 Turnstile patch)
+    # for console.nace.ai. Default mailbox is hotmail: a real inbox is required
+    # because Cloudflare Email Routing drops nace.ai OTP for the project temp
+    # domains. Serial only — each attempt owns a real browser; never fan out.
+    # NACE_LEGACY=1 rolls back to providers/nace/run-register.sh.
+    if [[ "${NACE_LEGACY:-0}" != "1" ]]; then
+      if [[ -d "$ROOT/.venv" && -x "$ROOT/.venv/bin/python" ]]; then
+        _PY="$ROOT/.venv/bin/python"
+      else
+        _PY="${PYTHON:-python3}"
+      fi
+      _ES="${NACE_EMAIL_SOURCE:-hotmail}"
+      case "$_ES" in
+        hotmail|outlook|gmail|gmail_imap|auto|"") _NACE_PROFILE="$ROOT/profiles/nace-hotmail.example.yaml" ;;
+        *)
+          echo "register.sh: unsupported NACE_EMAIL_SOURCE=$_ES (use hotmail|outlook|gmail_imap)" >&2
+          exit 2
+          ;;
+      esac
+      _ARGS=(
+        -m register_core run
+        --profile "$_NACE_PROFILE"
+        -n "$COUNT"
+        --threads 1
+        --timeout "${NACE_TIMEOUT:-1200}"
+      )
+      # n>1: a transient Turnstile/captcha flake must not abort the whole batch
+      # (profile fail_fast is batch-fatal on any failure, incl. captcha).
+      if [[ "$COUNT" =~ ^[0-9]+$ ]] && (( COUNT > 1 )); then
+        _ARGS+=(--no-fail-fast)
+      fi
+      [[ -n "${NACE_SINK:-}" ]] && _ARGS+=(--sink "$NACE_SINK")
+      [[ -n "${REGISTER_EGRESS:-}" ]] && _ARGS+=(--egress "$REGISTER_EGRESS")
+      [[ -n "${NACE_PROXY:-}" ]] && _ARGS+=(--proxy "$NACE_PROXY")
+      exec "$_PY" "${_ARGS[@]}"
+    fi
+    exec bash "$ROOT/providers/nace/run-register.sh" "$COUNT"
+    ;;
   outlook|microsoft|hotmail|msa)
     COUNT="${1:-1}"
     export COUNT
@@ -347,6 +394,9 @@ case "$cmd" in
         ;;
       typesafe|jev|typesafe-ai)
         exec bash "$ROOT/providers/typesafe/smoke.sh"
+        ;;
+      nace|nace-ai|nace.ai|drex)
+        exec bash "$ROOT/providers/nace/smoke.sh"
         ;;
       *)
         echo "unknown smoke target: $target" >&2

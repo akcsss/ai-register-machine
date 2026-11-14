@@ -8,6 +8,7 @@ Product packages. Each provider owns its browser stack and (for black-box runner
 | **MiMo** | `providers/mimo/` | Node + Playwright | `./register.sh mimo` | production |
 | **ChatGPT / OpenAI** | `providers/chatgpt/` | Python + curl_cffi + EmailSource | `./register.sh chatgpt` | production protocol |
 | **typesafe.ai / jev** | `providers/typesafe/` | Python + requests + EmailSource | `./register.sh typesafe` | in-process protocol |
+| **console.nace.ai** | `providers/nace/` | Python + DrissionPage + Turnstile patch | `./register.sh nace` | in-process browser |
 | **_template** | `providers/_template/` | your choice | — | copy-me |
 
 Layered orchestration (not a replacement for the above):
@@ -18,6 +19,7 @@ Layered orchestration (not a replacement for the above):
 ./register.sh core run -p grok -n 1 --no-verify
 ./register.sh core run -p chatgpt -n 1 --email-source tinyhost
 ./register.sh core run -p typesafe -n 1 --email-source tinyhost
+./register.sh core run -p nace -n 1 --email-source hotmail
 ```
 
 See [docs/ADDING_PROVIDER.md](../docs/ADDING_PROVIDER.md) and [ARCHITECTURE.md](../ARCHITECTURE.md).
