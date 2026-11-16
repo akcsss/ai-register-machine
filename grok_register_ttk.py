@@ -148,6 +148,11 @@ DEFAULT_CONFIG = {
     "mail_poll_interval": 2,
     # After email submit, wait this long for OTP form before treating as no-send.
     "email_submit_confirm_timeout": 12,
+    # Cloudflare 盾主动求解（slidex 打码站 turnstile 类型）。默认关闭：关闭时
+    # getTurnstileToken 完全走既有被动轮询，零行为变更。开启还需
+    # CAPTCHA_RUN_KEY（打码站 key）；求解失败一律回落被动路径。
+    "cf_solver_enabled": False,
+    "cf_solver_timeout": 120,
 }
 
 config = DEFAULT_CONFIG.copy()
@@ -416,6 +421,9 @@ _ENV_CONFIG_OVERLAYS = (
     ("EMAIL_PROVIDER", "email_provider"),
     ("EMAIL_PROVIDERS", "email_providers"),
     ("EMAIL_PROVIDER_STRATEGY", "email_provider_strategy"),
+    ("HOTMAIL_ALLOW_PLUS_ALIAS", "hotmail_allow_plus_alias"),
+    ("HOTMAIL_ALIAS_MODE", "hotmail_alias_mode"),
+    ("HOTMAIL_MAX_ALIASES_PER_ACCOUNT", "hotmail_max_aliases_per_account"),
     ("MAIL_TIMEOUT", "mail_timeout"),
     ("MAIL_POLL_INTERVAL", "mail_poll_interval"),
     ("EMAIL_SUBMIT_CONFIRM_TIMEOUT", "email_submit_confirm_timeout"),
@@ -458,6 +466,8 @@ _ENV_CONFIG_OVERLAYS = (
     ("CLASH_NODE_EXCLUDE", "clash_node_exclude"),
     ("CLASH_NODE_INCLUDE", "clash_node_include"),
     ("CPA_PROTOCOL_FLOW", "cpa_protocol_flow"),
+    ("CF_SOLVER_ENABLED", "cf_solver_enabled"),
+    ("CF_SOLVER_TIMEOUT", "cf_solver_timeout"),
 )
 
 
@@ -493,6 +503,8 @@ def apply_env_config_overrides(cfg: dict | None = None) -> dict:
         ("PROXY_ROTATE_UPDATE_CPA", "proxy_rotate_update_cpa", "bool"),
         ("CLASH_FLUSH_CONNECTIONS", "clash_flush_connections", "bool"),
         ("CLASH_RESTORE_ON_EXIT", "clash_restore_on_exit", "bool"),
+        ("CF_SOLVER_ENABLED", "cf_solver_enabled", "bool"),
+        ("CF_SOLVER_TIMEOUT", "cf_solver_timeout", "int"),
     ):
         raw = (os.environ.get(env_key) or "").strip()
         if not raw:
@@ -2411,11 +2423,17 @@ def _hotmail_parse_iso_ts(value):
         return 0
 
 
-def _hotmail_rest_get_code(mailbox_email, target_email, access_token, log_callback=None):
+def _hotmail_rest_get_code(
+    mailbox_email, target_email, access_token, log_callback=None, not_before_ts=None
+):
     """通过 Outlook Office REST 拉最近邮件并提取验证码。
 
     很多 consumer Hotmail 账号 OAuth 能过 IMAP AUTH，但 SELECT 报
     'User is authenticated but not connected'；REST 通常仍可用。
+
+    ``not_before_ts`` (epoch seconds) hard-floors the acceptable ReceivedDateTime
+    so a reused mailbox never returns a stale xAI code from a previous attempt
+    that is still inside the ``hotmail_recent_seconds`` window.
     """
     try:
         recent_seconds = int(config.get("hotmail_recent_seconds", 900) or 900)
@@ -2430,6 +2448,11 @@ def _hotmail_rest_get_code(mailbox_email, target_email, access_token, log_callba
         config.get("hotmail_require_recipient_match", True), default=True
     )
     filter_after_ts = int((time.time() - max(60, recent_seconds)) * 1000)
+    if not_before_ts:
+        try:
+            filter_after_ts = max(filter_after_ts, int(float(not_before_ts) * 1000))
+        except Exception:
+            pass
     target_lower = (target_email or "").strip().lower()
     keywords = [
         "x.ai",
@@ -2578,7 +2601,9 @@ def _hotmail_manual_prompt(mailbox_email, target_email, log_callback=None, promp
     return line
 
 
-def _hotmail_imap_get_code(mailbox_email, target_email, access_token, log_callback=None, host=None):
+def _hotmail_imap_get_code(
+    mailbox_email, target_email, access_token, log_callback=None, host=None, not_before_ts=None
+):
     import email as email_lib
     import imaplib
     from datetime import timezone
@@ -2596,6 +2621,14 @@ def _hotmail_imap_get_code(mailbox_email, target_email, access_token, log_callba
         config.get("hotmail_require_recipient_match", True), default=True
     )
     filter_after_ts = int((time.time() - max(60, recent_seconds)) * 1000)
+    # Reused mailbox hardening: never accept a code older than this registration
+    # attempt's send time (stale xAI code in the same 900s window was the
+    # email:invalid-validation-code root cause).
+    if not_before_ts:
+        try:
+            filter_after_ts = max(filter_after_ts, int(float(not_before_ts) * 1000))
+        except Exception:
+            pass
     target_lower = (target_email or "").strip().lower()
     keywords = [
         "x.ai",
@@ -2701,6 +2734,7 @@ def hotmail_get_oai_code(
     log_callback=None,
     cancel_callback=None,
     resend_callback=None,
+    not_before_ts=None,
 ):
     token_info = _hotmail_token_map.get(dev_token)
     if not token_info:
@@ -2750,6 +2784,7 @@ def hotmail_get_oai_code(
                             email,
                             access_token,
                             log_callback=log_callback,
+                            not_before_ts=not_before_ts,
                         )
                         transport_ok = True
                         if code:
@@ -2772,6 +2807,7 @@ def hotmail_get_oai_code(
                                 access_token,
                                 log_callback=log_callback,
                                 host=imap_host,
+                                not_before_ts=not_before_ts,
                             )
                             transport_ok = True
                             # 成功连接但本轮未找到码，不必再换同邮箱另一个 host 重扫。
@@ -3668,6 +3704,7 @@ def get_oai_code(
     log_callback=None,
     cancel_callback=None,
     resend_callback=None,
+    not_before_ts=None,
 ):
     provider = get_email_provider()
     if provider in ("fixed", "core", "register_core"):
@@ -3687,6 +3724,7 @@ def get_oai_code(
             log_callback=log_callback,
             cancel_callback=cancel_callback,
             resend_callback=resend_callback,
+            not_before_ts=not_before_ts,
         )
     if provider in ("gmail", "google", "googlemail"):
         return gmail_get_oai_code(
@@ -4972,6 +5010,62 @@ def wait_for_code_form_after_email_submit(
     return False
 
 
+_NETLOG_INSTALL_JS = r"""
+try {
+  if (!window.__netLog) {
+    window.__netLog = [];
+    const cap = (e) => { try { window.__netLog.push(e); if (window.__netLog.length > 80) window.__netLog.shift(); } catch(_){} };
+    const of = window.fetch;
+    window.fetch = function(){
+      const a = arguments;
+      return of.apply(this, a).then(r => {
+        try {
+          const u = (a[0] && a[0].url) || a[0];
+          const cl = r.clone();
+          cl.text().then(b => cap({u: String(u), s: r.status, b: String(b).slice(0, 220)})).catch(() => cap({u: String(u), s: r.status, b: ''}));
+        } catch(_) {}
+        return r;
+      });
+    };
+    const oo = XMLHttpRequest.prototype.open, os = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.open = function(m, u){ this.__u = u; this.__m = m; return oo.apply(this, arguments); };
+    XMLHttpRequest.prototype.send = function(){
+      this.addEventListener('load', () => { try { cap({u: String(this.__u), s: this.status, b: String(this.responseText || '').slice(0, 220)}); } catch(_){} });
+      return os.apply(this, arguments);
+    };
+  }
+} catch(e) {}
+"""
+
+_NETLOG_DUMP_JS = r"""
+try {
+  const log = (window.__netLog || []).filter(x => /api\/auth|verify-email|sign-up|send-verification/.test(String(x.u || ''))).slice(-8);
+  return JSON.stringify({url: location.href, text: (document.body.innerText || '').replace(/\s+/g, ' ').slice(0, 420), log});
+} catch(e) { return String(e); }
+"""
+
+
+def _install_netlog_diag(page):
+    """Record recent auth API responses on the SPA page (GROK_DIAG only)."""
+    if not os.environ.get("GROK_DIAG") or page is None:
+        return
+    try:
+        page.run_js(_NETLOG_INSTALL_JS)
+    except Exception:
+        pass
+
+
+def _netlog_diag_dump(page, tag, log_callback):
+    """Log page text + captured auth responses for one tagged step (GROK_DIAG only)."""
+    if not os.environ.get("GROK_DIAG") or not log_callback:
+        return
+    try:
+        data = page.run_js(_NETLOG_DUMP_JS)
+        log_callback(f"[Diag] {tag}: {data}")
+    except Exception as exc:
+        log_callback(f"[Diag] {tag} dump失败: {exc}")
+
+
 def fill_email_and_submit(timeout=15, log_callback=None, cancel_callback=None):
     page = _get_page()
     raise_if_cancelled(cancel_callback)
@@ -4989,6 +5083,9 @@ def fill_email_and_submit(timeout=15, log_callback=None, cancel_callback=None):
         raise Exception("页面未就绪，无法填写邮箱")
     if log_callback:
         log_callback(f"[*] 已创建邮箱: {email}")
+    # Install before submit so the send-verification-code response is captured
+    # when the SPA stalls on the email step (domain-rejected vs transport).
+    _install_netlog_diag(page)
     # If still on provider chooser, re-click email signup before waiting on the input.
     if not _email_input_ready(page):
         try:
@@ -5109,6 +5206,7 @@ return true;
                 log_callback=log_callback,
                 cancel_callback=cancel_callback,
             ):
+                _netlog_diag_dump(page, "email-submit-fail", log_callback)
                 # Carry email so register_cli can release (not silent-lose) the
                 # reservation; post-submit SPA stall is not a permanent burn.
                 raise AccountRetryNeeded(
@@ -5142,6 +5240,11 @@ def fill_code_and_submit(email, dev_token, timeout=180, log_callback=None, cance
     check_timeout(time.time())
     dump_state(page, "wait-code")
     take_screenshot(page, "wait-code")
+    _install_netlog_diag(page)
+
+    def _diag(tag):
+        _netlog_diag_dump(page, tag, log_callback)
+
     def _resend_code():
         page.run_js(
             r"""
@@ -5168,6 +5271,12 @@ return false;
     except Exception:
         mail_poll_interval = 2
 
+    # Floors the mailbox scan at just-before-this-send so a reused Hotmail
+    # mailbox can't hand back a stale xAI code from a prior attempt (that stale
+    # code was why verify-email returned ``email:invalid-validation-code``).
+    # 60s slack absorbs clock skew between us and the mail server while still
+    # excluding codes older than this attempt.
+    not_before_ts = time.time() - 60
     code = get_oai_code(
         dev_token,
         email,
@@ -5176,10 +5285,17 @@ return false;
         log_callback=log_callback,
         cancel_callback=cancel_callback,
         resend_callback=_resend_code,
+        not_before_ts=not_before_ts,
     )
     if not code:
         raise Exception("获取验证码失败")
-    clean_code = str(code).replace("-", "").strip()
+    # xAI codes are ``XXX-XXX`` (subject "806-738 xAI confirmation code"). The
+    # signup page uses ONE input[name="code"] sized for the dashes, so the
+    # aggregate must be filled WITH the dash. Stripping it to ``806738`` is what
+    # produced ``email:invalid-validation-code``. Keep the raw form and only
+    # strip for the multi-box OTP fallback (one char per box).
+    raw_code = str(code).strip()
+    clean_code = raw_code.replace("-", "")
     try:
         code_form_timeout = int(config.get("code_form_timeout", timeout) or timeout)
     except Exception:
@@ -5195,7 +5311,8 @@ return false;
             break
         filled = page.run_js(
             """
-const code = String(arguments[0] || '').trim();
+const codeRaw = String(arguments[0] || '').trim();
+const code = codeRaw.replace(/[-\\s]/g, '');
 if (!code) return 'empty-code';
 
 function isVisible(node) {
@@ -5224,7 +5341,11 @@ const aggregate = Array.from(document.querySelectorAll(
 if (aggregate) {
     aggregate.focus();
     aggregate.click();
-    setInputValue(aggregate, code);
+    const ml = Number(aggregate.maxLength || 0);
+    // Prefer the dashed form ("806-738") — xAI's single code input expects it.
+    // Only strip when the field is too short to hold the dash.
+    const val = (ml && ml > 0 && ml < codeRaw.length) ? code : codeRaw;
+    setInputValue(aggregate, val);
     return String(aggregate.value || '').replace(/\\s+/g, '') ? 'filled-aggregate' : 'aggregate-failed';
 }
 
@@ -5251,7 +5372,7 @@ if (otpBoxes.length >= code.length) {
 
 return 'not-ready';
             """,
-            clean_code,
+            raw_code,
         )
 
         if filled == "not-ready":
@@ -5349,6 +5470,7 @@ return 'pending';
             human_sleep(1.0, cancel_callback, min_seconds=0.6)
             if wait_for_profile_form(timeout=wait_budget, log_callback=log_callback, cancel_callback=cancel_callback):
                 return code
+            _diag("advanced-timeout")
             if log_callback:
                 log_callback("[Debug] advanced 未确认到资料页，当作未推进继续重试")
             human_sleep(0.5, cancel_callback, min_seconds=0.3)
@@ -5359,6 +5481,7 @@ return 'pending';
         human_sleep(0.5, cancel_callback, min_seconds=0.25)
 
     snap = _page_form_snapshot(page)
+    _diag("final-fail")
     if code_filled_once:
         # 码已写入页面，失败属于推进/资料页，不是“没拿到验证码”
         raise Exception(
@@ -5367,10 +5490,185 @@ return 'pending';
     raise Exception(f"验证码已获取，但自动填写/提交失败: code={code} snap={snap}")
 
 
+def _cfg_truthy(value) -> bool:
+    """config 值宽松布尔：env overlay 进来的是字符串（"1"/"true"/"on"）。"""
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+# x.ai 注册页 RSC flight payload 的 sitekey 模式。
+#
+# 真实形态（2026-11-16 真 Chrome + 真实页面存档实测）：浏览器
+# ``document.documentElement.innerHTML`` 里是**转义**的 —— sitekey\":\"0x4…
+# （反斜杠跟着引号），不是未转义的纯 JSON。所以每个引号前都允许一个可选的
+# 反斜杠，两种形态都能匹配。
+#
+# 同一份模式 JS 正则字面量与 Python re 共用：``\\?``（可选字面反斜杠）、
+# ``\s``、``["\']`` 在两侧语义一致，单测可离线覆盖（见
+# tests/unit/test_cf_solver.py）。
+_SITEKEY_RSC_PATTERN = r'sitekey\\?["\']\s*:\s*\\?["\'](0x[0-9A-Za-z_-]{8,})'
+
+_SITEKEY_SCRIPT = """
+try {
+  const direct = document.querySelector('[data-sitekey]');
+  if (direct) return String(direct.getAttribute('data-sitekey') || '').trim();
+  const input = document.querySelector('input[name="cf-turnstile-response"]');
+  if (input && input.closest) {
+    const host = input.closest('[data-sitekey]');
+    if (host) return String(host.getAttribute('data-sitekey') || '').trim();
+  }
+  // Next.js RSC flight payload: sitekey":"0x4AAAA…（真实页面为转义形态，
+  // 引号前允许一个可选反斜杠；未转义形态同样命中）。
+  const html = document.documentElement.innerHTML || '';
+  let m = html.match(/__SITEKEY_RSC__/);
+  if (m) return m[1];
+  // Last resort: any 0x4-prefixed turnstile sitekey token on the page.
+  m = html.match(/\\b0x4[A-Za-z0-9_-]{10,}\\b/);
+  if (m) return m[0];
+  return '';
+} catch(e) { return ''; }
+"""
+
+
+def _cf_solver_sitekey(page) -> str:
+    """从 DOM 抓 Turnstile sitekey；抓不到返回空串（调用方回落被动路径）。
+
+    x.ai 注册页是 Next.js + ``turnstile.render()`` 显式渲染：DOM 里没有
+    ``data-sitekey``，sitekey 以 ``"sitekey":"0x4…"`` 形式内嵌在 RSC flight
+    payload 里。抓取顺序：data-sitekey 属性 → RSC payload → 全页 0x4 令牌。
+
+    兜底（整页任意 0x4 令牌）只在 RSC 正则落空时启用：页面上若同时存在
+    其它 0x4 形状 token（nonce 等），兜底可能抓到错的，所以 RSC 正则必须
+    自己能命中转义形态。
+    """
+    try:
+        script = _SITEKEY_SCRIPT.replace("__SITEKEY_RSC__", _SITEKEY_RSC_PATTERN)
+        return str(page.run_js(script) or "").strip()
+    except Exception:
+        return ""
+
+
+def _cf_solver_write_back(page, token: str) -> int:
+    """把求解得到的 token 回填到 cf-turnstile-response。返回回填后长度。
+
+    与二次复用（下方 fill_profile 循环内）同一套 React native setter 写法：
+    直接改 value 不会触发 React 受控组件更新，必须走原型 setter + 事件。
+    """
+    try:
+        synced = page.run_js(
+            """
+const token = String(arguments[0] || '').trim();
+const cfInput = document.querySelector('input[name="cf-turnstile-response"]');
+if (!cfInput || !token) return 0;
+const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+if (nativeSetter) nativeSetter.call(cfInput, token);
+else cfInput.value = token;
+cfInput.dispatchEvent(new Event('input', { bubbles: true }));
+cfInput.dispatchEvent(new Event('change', { bubbles: true }));
+return String(cfInput.value || '').trim().length;
+            """,
+            token,
+        )
+        return int(synced or 0)
+    except Exception:
+        return 0
+
+
+def _solve_turnstile_with_cf_solver(log_callback=None, cancel_callback=None) -> str:
+    """主动求解 Turnstile（打码站 turnstile 类型）。失败返回 ""，由调用方回落。
+
+    门控（三重，全过才动手）：``cf_solver_enabled`` 开启 → ``CAPTCHA_RUN_KEY``
+    已配置 → 页面上能抓到 sitekey 且浏览器在用可被打码站触达的上游代理。
+
+    同出口 IP 铁律：传给打码站的必须是注册浏览器同一条上游代理（带凭据），
+    而不是本地代理桥（127.0.0.1:xxxx）——后者打码站无法从中解题。这也意味着
+    本地 Clash 端口（config proxy 默认 127.0.0.1:7890）上手动跑单时本功能
+    会自动跳过，生产必须用真实上游代理串。
+
+    任何异常都只记日志不抛出：主动求解是增强项，零回归优先。
+    """
+    if not isinstance(config, dict) or not _cfg_truthy(config.get("cf_solver_enabled")):
+        return ""
+    try:
+        from register_core import cf_solver
+    except Exception as exc:  # pragma: no cover - import 环境问题
+        if log_callback:
+            log_callback(f"[Debug] CF 主动求解不可用（import 失败）: {exc}")
+        return ""
+    if not cf_solver.solver_configured():
+        if log_callback:
+            log_callback("[Debug] CF 主动求解已开启但 CAPTCHA_RUN_KEY 未配置，回落被动等待")
+        return ""
+
+    page = _get_page()
+    if page is None:
+        return ""
+    url = str(getattr(page, "url", "") or "")
+    if not url.startswith("http"):
+        return ""
+
+    sitekey = _cf_solver_sitekey(page)
+    if not sitekey:
+        if log_callback:
+            log_callback("[Debug] CF 主动求解：页面无 data-sitekey，回落被动等待")
+        return ""
+
+    proxy = get_configured_proxy()
+    if proxy:
+        from urllib.parse import urlparse
+
+        host = (urlparse(proxy).hostname or "").strip().lower()
+        if host in ("localhost", "::1") or host.startswith("127."):
+            if log_callback:
+                log_callback(
+                    "[Debug] CF 主动求解跳过：上游代理是本地端口（打码站无法共用出口 IP）"
+                )
+            return ""
+
+    try:
+        timeout_s = float(config.get("cf_solver_timeout") or 120)
+    except (TypeError, ValueError):
+        timeout_s = 120.0
+    timeout_s = max(15.0, min(timeout_s, 150.0))
+
+    raise_if_cancelled(cancel_callback)
+    if log_callback:
+        log_callback(
+            f"[*] CF 主动求解 Turnstile：sitekey={sitekey} "
+            f"出口={'上游代理' if proxy else '打码站直连'} 预算={timeout_s:.0f}s"
+        )
+    try:
+        token = cf_solver.solve_turnstile_token(
+            url, sitekey, proxy=proxy, timeout_s=timeout_s
+        )
+    except Exception as exc:
+        if log_callback:
+            log_callback(f"[Debug] CF 主动求解失败，回落被动等待: {exc}")
+        return ""
+    raise_if_cancelled(cancel_callback)
+    synced = _cf_solver_write_back(page, token)
+    if synced >= 80:
+        return token
+    if log_callback:
+        log_callback(f"[Debug] CF 主动求解回填未生效（长度={synced}），回落被动等待")
+    return ""
+
+
 def getTurnstileToken(log_callback=None, cancel_callback=None):
     page = _get_page()
     if page is None:
         raise Exception("页面未就绪，无法执行 Turnstile")
+
+    # 主动求解（可选，cf_solver_enabled 默认关闭）：成功直接返回，失败原样
+    # 走下面既有的被动轮询循环——现有逻辑一行不动，保证零回归。
+    solved = _solve_turnstile_with_cf_solver(
+        log_callback=log_callback, cancel_callback=cancel_callback
+    )
+    if solved:
+        if log_callback:
+            log_callback(f"[*] Turnstile 主动求解成功，token长度={len(solved)}")
+        return solved
 
     try:
         page.run_js(
